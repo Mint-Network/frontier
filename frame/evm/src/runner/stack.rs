@@ -22,7 +22,6 @@ use sp_core::{U256, H256, H160};
 use sp_runtime::traits::UniqueSaturatedInto;
 use frame_support::{
 	ensure, traits::{Get, Currency, ExistenceRequirement},
-	storage::{StorageMap, StorageDoubleMap},
 };
 use sha3::{Keccak256, Digest};
 use fp_evm::{ExecutionInfo, CallInfo, CreateInfo, Log, Vicinity};
@@ -392,11 +391,11 @@ impl<'vicinity, 'config, T: Config> BackendT for SubstrateStackState<'vicinity, 
 	}
 
 	fn code(&self, address: H160) -> Vec<u8> {
-		AccountCodes::<T>::get(&address)
+		<AccountCodes<T>>::get(&address)
 	}
 
 	fn storage(&self, address: H160, index: H256) -> H256 {
-		AccountStorages::<T>::get(address, index)
+		<AccountStorages<T>>::get(address, index)
 	}
 
 	fn original_storage(&self, _address: H160, _index: H256) -> Option<H256> {
@@ -450,7 +449,7 @@ impl<'vicinity, 'config, T: Config> StackStateT<'config> for SubstrateStackState
 				address,
 				index,
 			);
-			AccountStorages::<T>::remove(address, index);
+			<AccountStorages<T>>::remove(address, index);
 		} else {
 			log::debug!(
 				target: "evm",
@@ -459,12 +458,12 @@ impl<'vicinity, 'config, T: Config> StackStateT<'config> for SubstrateStackState
 				index,
 				value,
 			);
-			AccountStorages::<T>::insert(address, index, value);
+			<AccountStorages<T>>::insert(address, index, value);
 		}
 	}
 
 	fn reset_storage(&mut self, address: H160) {
-		AccountStorages::<T>::remove_prefix(address);
+		<AccountStorages<T>>::remove_prefix(address);
 	}
 
 	fn log(&mut self, address: H160, topics: Vec<H256>, data: Vec<u8>) {

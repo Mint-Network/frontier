@@ -21,6 +21,8 @@ mod utils;
 pub use sp_database::Database;
 
 use std::{sync::Arc, path::{Path, PathBuf}, marker::PhantomData};
+use fp_storage::PALLET_ETHEREUM_SCHEMA_CACHE;
+use pallet_ethereum::EthereumStorageSchema;
 use sp_core::H256;
 use sp_runtime::traits::Block as BlockT;
 use parking_lot::Mutex;
@@ -127,6 +129,37 @@ impl<Block: BlockT> MetaDb<Block> {
 
 		Ok(())
 	}
+
+	pub fn ethereum_schema(&self) -> Result<Option<Vec<(EthereumStorageSchema, H256)>>, String> {
+		match self
+			.db
+			.get(crate::columns::META, &PALLET_ETHEREUM_SCHEMA_CACHE.encode())
+		{
+			Some(raw) => Ok(Some(
+				Decode::decode(&mut &raw[..]).map_err(|e| format!("{:?}", e))?,
+			)),
+			None => Ok(None),
+		}
+	}
+
+	pub fn write_ethereum_schema(
+		&self,
+		new_cache: Vec<(EthereumStorageSchema, H256)>,
+	) -> Result<(), String> {
+		let mut transaction = sp_database::Transaction::new();
+
+		transaction.set(
+			crate::columns::META,
+			&PALLET_ETHEREUM_SCHEMA_CACHE.encode(),
+			&new_cache.encode(),
+		);
+
+		self.db
+			.commit(transaction)
+			.map_err(|e| format!("{:?}", e))?;
+
+		Ok(())
+	}
 }
 
 pub struct MappingCommitment<Block: BlockT> {
@@ -177,6 +210,25 @@ impl<Block: BlockT> MappingDb<Block> {
 			Some(raw) => Ok(Vec::<TransactionMetadata<Block>>::decode(&mut &raw[..]).map_err(|e| format!("{:?}", e))?),
 			None => Ok(Vec::new()),
 		}
+	}
+
+	pub fn write_none(
+		&self,
+		block_hash: Block::Hash
+	) -> Result<(), String> {
+		let _lock = self.write_lock.lock();
+
+		let mut transaction = sp_database::Transaction::new();
+
+		transaction.set(
+			crate::columns::SYNCED_MAPPING,
+			&block_hash.encode(),
+			&true.encode(),
+		);
+
+		self.db.commit(transaction).map_err(|e| format!("{:?}", e))?;
+
+		Ok(())
 	}
 
 	pub fn write_hashes(

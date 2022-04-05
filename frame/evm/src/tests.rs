@@ -21,7 +21,8 @@ use super::*;
 
 use std::{str::FromStr, collections::BTreeMap};
 use frame_support::{
-	assert_ok, impl_outer_origin, parameter_types, impl_outer_dispatch, traits::GenesisBuild,
+	assert_ok, impl_outer_origin, parameter_types, impl_outer_dispatch,
+	traits::GenesisBuild,
 };
 use sp_core::{Blake2Hasher, H256};
 use sp_runtime::{
@@ -81,7 +82,6 @@ impl frame_system::Config for Test {
 	type OnKilledAccount = ();
 	type SystemWeightInfo = ();
 	type SS58Prefix = ();
-	type OnSetCode = ();
 }
 
 parameter_types! {
@@ -140,7 +140,7 @@ type EVM = Pallet<Test>;
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
 	let mut t = frame_system::GenesisConfig::default().build_storage::<Test>().unwrap();
-	use self::GenesisConfig as EVMConfig;
+
 	let mut accounts = BTreeMap::new();
 	accounts.insert(
 		H160::from_str("1000000000000000000000000000000000000001").unwrap(),
@@ -166,7 +166,7 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
 	);
 
 	pallet_balances::GenesisConfig::<Test>::default().assimilate_storage(&mut t).unwrap();
-	EVMConfig { accounts }.assimilate_storage(&mut t).unwrap();
+	<GenesisConfig as GenesisBuild<Test>>::assimilate_storage(&GenesisConfig { accounts }, &mut t).unwrap();
 	t.into()
 }
 

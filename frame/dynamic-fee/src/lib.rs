@@ -22,9 +22,7 @@ use codec::{Encode, Decode};
 use sp_std::{result, cmp::{min, max}};
 use sp_runtime::RuntimeDebug;
 use sp_core::U256;
-use sp_inherents::{InherentIdentifier, InherentData, ProvideInherent, IsFatalError};
-#[cfg(feature = "std")]
-use sp_inherents::ProvideInherentData;
+use sp_inherents::{InherentIdentifier, InherentData, IsFatalError};
 use frame_support::{traits::Get};
 
 use frame_system::ensure_none;
@@ -53,6 +51,27 @@ pub mod pallet {
 	#[pallet::getter(fn min_gas_price)]
 	pub type MinGasPrice<T: Config> = StorageValue<_, U256, ValueQuery>;
 
+	#[pallet::genesis_config]
+	pub struct GenesisConfig {
+		pub gas_price: U256,
+	}
+
+	#[cfg(feature = "std")]
+	impl Default for GenesisConfig {
+		fn default() -> Self {
+			Self {
+				gas_price: U256::from(1),
+			}
+		}
+	}
+
+	#[pallet::genesis_build]
+	impl<T: Config> GenesisBuild<T> for GenesisConfig {
+		fn build(&self) {
+			MinGasPrice::<T>::set(U256::from(1));
+		}
+	}
+
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
@@ -66,7 +85,7 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_finalize(_n: T::BlockNumber) {
-			if let Some(target) = TargetMinGasPrice::<T>::get() {
+			if let Some(target) = TargetMinGasPrice::<T>::take() {
 				let bound = MinGasPrice::<T>::get() / T::MinGasPriceBoundDivisor::get() + U256::one();
 
 				let upper_limit = MinGasPrice::<T>::get().saturating_add(bound);
@@ -87,11 +106,39 @@ pub mod pallet {
 			target: U256,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?;
+			assert!(TargetMinGasPrice::<T>::get().is_none(), "TargetMinGasPrice must be updated only once in the block");
 
 			TargetMinGasPrice::<T>::set(Some(target));
 			Self::deposit_event(Event::TargetMinGasPriceSet(target));
 			Ok(().into())
 		}
+	}
+
+	#[pallet::inherent]
+	impl<T: Config> ProvideInherent for Pallet<T> {
+		type Call = Call<T>;
+		type Error = InherentError;
+		const INHERENT_IDENTIFIER: InherentIdentifier = INHERENT_IDENTIFIER;
+
+		fn create_inherent(data: &InherentData) -> Option<Self::Call> {
+			let target = data.get_data::<InherentType>(&INHERENT_IDENTIFIER).ok()??;
+
+			Some(Call::note_min_gas_price_target(target))
+		}
+
+		fn check_inherent(_call: &Self::Call, _data: &InherentData) -> result::Result<(), Self::Error> {
+			Ok(())
+		}
+
+		fn is_inherent(call: &Self::Call) -> bool {
+			matches!(call, Call::note_min_gas_price_target(_))
+		}
+	}
+}
+
+impl<T: Config> pallet_evm::FeeCalculator for Pallet<T> {
+	fn min_gas_price() -> U256 {
+		MinGasPrice::<T>::get()
 	}
 }
 
@@ -104,19 +151,28 @@ impl IsFatalError for InherentError {
 	}
 }
 
-pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"dynfee0_";
+impl InherentError {
+	/// Try to create an instance ouf of the given identifier and data.
+	#[cfg(feature = "std")]
+	pub fn try_from(id: &InherentIdentifier, data: &[u8]) -> Option<Self> {
+		if id == &INHERENT_IDENTIFIER {
+			<InherentError as codec::Decode>::decode(&mut &data[..]).ok()
+		} else {
+			None
+		}
+	}
+}
 
+pub const INHERENT_IDENTIFIER: InherentIdentifier = *b"dynfee0_";
 pub type InherentType = U256;
+
 
 #[cfg(feature = "std")]
 pub struct InherentDataProvider(pub InherentType);
 
 #[cfg(feature = "std")]
-impl ProvideInherentData for InherentDataProvider {
-	fn inherent_identifier(&self) -> &'static InherentIdentifier {
-		&INHERENT_IDENTIFIER
-	}
-
+#[async_trait::async_trait]
+impl sp_inherents::InherentDataProvider for InherentDataProvider {
 	fn provide_inherent_data(
 		&self,
 		inherent_data: &mut InherentData
@@ -124,23 +180,22 @@ impl ProvideInherentData for InherentDataProvider {
 		inherent_data.put_data(INHERENT_IDENTIFIER, &self.0)
 	}
 
-	fn error_to_string(&self, _: &[u8]) -> Option<String> {
-		None
-	}
-}
+	async fn try_handle_error(
+		&self,
+		identifier: &InherentIdentifier,
+		error: &[u8],
+	) -> Option<Result<(), sp_inherents::Error>> {
+		if *identifier != INHERENT_IDENTIFIER {
+			return None
+		}
 
-impl<T: Config> ProvideInherent for Pallet<T> {
-	type Call = Call<T>;
-	type Error = InherentError;
-	const INHERENT_IDENTIFIER: InherentIdentifier = INHERENT_IDENTIFIER;
-
-	fn create_inherent(data: &InherentData) -> Option<Self::Call> {
-		let target = data.get_data::<InherentType>(&INHERENT_IDENTIFIER).ok()??;
-
-		Some(Call::note_min_gas_price_target(target))
-	}
-
-	fn check_inherent(_call: &Self::Call, _data: &InherentData) -> result::Result<(), Self::Error> {
-		Ok(())
+		match InherentError::try_from(&INHERENT_IDENTIFIER, error) {
+			Some(err) => {
+				let error_string: &str = &format!("{:?}", err).to_owned();
+				let error = sp_inherents::Error::Application(Box::from(error_string));
+				Some(Err(error))
+			},
+			None => None,
+		}
 	}
 }

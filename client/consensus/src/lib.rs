@@ -16,13 +16,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use futures::prelude::*;
-
+use std::sync::Arc;
 use std::collections::HashMap;
-use std::{
-	sync::Arc, marker::PhantomData, fmt::Debug,
-	
-};
+use std::marker::PhantomData;
 use fp_consensus::{ensure_log, FindLogError};
 use fp_rpc::EthereumRuntimeRPCApi;
 use sc_client_api::{BlockOf, backend::AuxStore};

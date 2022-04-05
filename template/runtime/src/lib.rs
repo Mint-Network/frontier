@@ -19,7 +19,7 @@ use sp_runtime::traits::{
 	BlakeTwo256, Block as BlockT, Verify, IdentifyAccount, NumberFor, AccountIdLookup,
 };
 use sp_api::impl_runtime_apis;
-use sp_consensus_aura::{sr25519::AuthorityId as AuraId, SlotDuration};
+use sp_consensus_aura::sr25519::AuthorityId as AuraId;
 use pallet_grandpa::{AuthorityId as GrandpaId, AuthorityList as GrandpaAuthorityList};
 use pallet_grandpa::fg_primitives;
 use sp_version::RuntimeVersion;
@@ -42,6 +42,8 @@ pub use frame_support::{
 	},
 	ConsensusEngineId,
 };
+use sp_consensus_aura::SlotDuration;
+
 use pallet_evm::{
 	Account as EVMAccount, FeeCalculator, HashedAddressMapping,
 	EnsureAddressTruncated, Runner,
@@ -189,7 +191,6 @@ impl frame_system::Config for Runtime {
 	type SystemWeightInfo = ();
 	/// This is used as an identifier of the chain. 42 is the generic substrate prefix.
 	type SS58Prefix = SS58Prefix;
-	/// What to do if a new WASM runtime is set
 	type OnSetCode = ();
 }
 
@@ -266,15 +267,6 @@ impl pallet_sudo::Config for Runtime {
 	type Call = Call;
 }
 
-/// Fixed gas price of `1`.
-pub struct FixedGasPrice;
-
-impl FeeCalculator for FixedGasPrice {
-	fn min_gas_price() -> U256 {
-		// Gas price is always one token per gas.
-		1.into()
-	}
-}
 
 parameter_types! {
 	pub const ChainId: u64 = 42;
@@ -282,7 +274,7 @@ parameter_types! {
 }
 
 impl pallet_evm::Config for Runtime {
-	type FeeCalculator = FixedGasPrice;
+	type FeeCalculator = pallet_dynamic_fee::Module<Self>;
 	type GasWeightMapping = ();
 	type CallOrigin = EnsureAddressTruncated;
 	type WithdrawOrigin = EnsureAddressTruncated;
@@ -295,6 +287,7 @@ impl pallet_evm::Config for Runtime {
 		pallet_evm_precompile_simple::Sha256,
 		pallet_evm_precompile_simple::Ripemd160,
 		pallet_evm_precompile_simple::Identity,
+		pallet_evm_precompile_modexp::Modexp,
 		pallet_evm_precompile_simple::ECRecoverPublicKey,
 		pallet_evm_precompile_sha3fips::Sha3FIPS256,
 		pallet_evm_precompile_sha3fips::Sha3FIPS512,
@@ -324,6 +317,15 @@ impl pallet_ethereum::Config for Runtime {
 	type StateRoot = pallet_ethereum::IntermediateStateRoot;
 }
 
+frame_support::parameter_types! {
+	pub BoundDivision: U256 = U256::from(1024);
+}
+
+impl pallet_dynamic_fee::Config for Runtime {
+	type MinGasPriceBoundDivisor = BoundDivision;
+	type Event = Event;
+}
+
 // Create the runtime by composing the FRAME pallets that were previously configured.
 construct_runtime!(
 	pub enum Runtime where
@@ -339,8 +341,9 @@ construct_runtime!(
 		Balances: pallet_balances::{Pallet, Call, Storage, Config<T>, Event<T>},
 		TransactionPayment: pallet_transaction_payment::{Pallet, Storage},
 		Sudo: pallet_sudo::{Pallet, Call, Config<T>, Storage, Event<T>},
-		Ethereum: pallet_ethereum::{Pallet, Call, Storage, Event<T>, ValidateUnsigned},
+		Ethereum: pallet_ethereum::{Pallet, Call, Storage, Event, Config, ValidateUnsigned},
 		EVM: pallet_evm::{Pallet, Config, Call, Storage, Event<T>},
+		DynamicFee: pallet_dynamic_fee::{Pallet, Call, Storage, Config, Event<T>, Inherent},
 	}
 );
 
@@ -390,7 +393,7 @@ pub type Executive = frame_executive::Executive<
 	Block,
 	frame_system::ChainContext<Runtime>,
 	Runtime,
-	AllModules
+	AllPallets
 >;
 
 impl_runtime_apis! {
@@ -432,10 +435,6 @@ impl_runtime_apis! {
 			data: sp_inherents::InherentData,
 		) -> sp_inherents::CheckInherentsResult {
 			data.check_extrinsics(&block)
-		}
-
-		fn random_seed() -> <Block as BlockT>::Hash {
-			RandomnessCollectiveFlip::random_seed().0
 		}
 	}
 
@@ -488,7 +487,7 @@ impl_runtime_apis! {
 		}
 
 		fn author() -> H160 {
-			<pallet_ethereum::Pallet<Runtime>>::find_author()
+			<pallet_ethereum::Module<Runtime>>::find_author()
 		}
 
 		fn storage_at(address: H160, index: U256) -> H256 {
@@ -556,24 +555,15 @@ impl_runtime_apis! {
 		}
 
 		fn current_transaction_statuses() -> Option<Vec<TransactionStatus>> {
-			match Ethereum::current_transaction_statuses() {
-				Some(elt) => Some(elt.into()),
-				None => None,
-			}
+			Ethereum::current_transaction_statuses()
 		}
 
 		fn current_block() -> Option<pallet_ethereum::Block> {
-			match Ethereum::current_block() {
-				Some(elt) => Some(elt.into()),
-				None => None,
-			}
+			Ethereum::current_block()
 		}
 
 		fn current_receipts() -> Option<Vec<pallet_ethereum::Receipt>> {
-			match Ethereum::current_receipts() {
-				Some(elt) => Some(elt.into()),
-				None => None,
-			}
+			Ethereum::current_receipts()
 		}
 
 		fn current_all() -> (
@@ -582,9 +572,9 @@ impl_runtime_apis! {
 			Option<Vec<TransactionStatus>>
 		) {
 			(
-				Self::current_block(),
-				Self::current_receipts(),
-				Self::current_transaction_statuses(),
+				Ethereum::current_block(),
+				Ethereum::current_receipts(),
+				Ethereum::current_transaction_statuses()
 			)
 		}
 	}

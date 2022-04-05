@@ -26,7 +26,7 @@ use frame_support::traits::Get;
 use frame_support::{debug, storage::{StorageMap, StorageDoubleMap}};
 use sha3::{Keccak256, Digest};
 use evm::backend::{Backend as BackendT, ApplyBackend, Apply};
-use crate::{Trait, AccountStorages, AccountCodes, Pallet, Event};
+use crate::{AccountStorages, AccountCodes, Config, Event, Pallet};
 
 #[derive(Clone, Eq, PartialEq, Encode, Decode, Default)]
 #[cfg_attr(feature = "std", derive(Debug, Serialize, Deserialize))]
@@ -73,7 +73,7 @@ impl<'vicinity, T> Backend<'vicinity, T> {
 	}
 }
 
-impl<'vicinity, T: Trait> BackendT for Backend<'vicinity, T> {
+impl<'vicinity, T: Config> BackendT for Backend<'vicinity, T> {
 	fn gas_price(&self) -> U256 { self.vicinity.gas_price }
 	fn origin(&self) -> H160 { self.vicinity.origin }
 
@@ -130,14 +130,14 @@ impl<'vicinity, T: Trait> BackendT for Backend<'vicinity, T> {
 	}
 
 	fn code_hash(&self, address: H160) -> H256 {
-		H256::from_slice(Keccak256::digest(&AccountCodes::<T>::get(&address)).as_slice())
+		H256::from_slice(Keccak256::digest(&AccountCodes::get(&address)).as_slice())
 	}
 
 	fn code(&self, address: H160) -> Vec<u8> {
-		AccountCodes::<T>::get(&address)
+		AccountCodes::get(&address)
 	}
 
 	fn storage(&self, address: H160, index: H256) -> H256 {
-		AccountStorages::<T>::get(address, index)
+		AccountStorages::get(address, index)
 	}
 }

@@ -54,6 +54,8 @@ pub struct FullDeps<C, P> {
 	pub filter_pool: Option<FilterPool>,
 	/// Backend.
 	pub backend: Arc<fc_db::Backend<Block>>,
+	/// Maximum number of logs in a query.
+	pub max_past_logs: u32,
 	/// Manual seal command sink
 	pub command_sink: Option<futures::channel::mpsc::Sender<sc_consensus_manual_seal::rpc::EngineCommand<Hash>>>,
 }
@@ -94,6 +96,7 @@ pub fn create_full<C, P, BE>(
 		filter_pool,
 		command_sink,
 		backend,
+		max_past_logs,
 		enable_dev_signer,
 	} = deps;
 
@@ -119,35 +122,37 @@ pub fn create_full<C, P, BE>(
 		fallback: Box::new(RuntimeApiStorageOverride::new(client.clone())),
 	});
 
-	io.extend_with(
-		EthApiServer::to_delegate(EthApi::new(
-			client.clone(),
-			pool.clone(),
-			frontier_template_runtime::TransactionConverter,
-			network.clone(),
-			pending_transactions.clone(),
-			signers,
-			overrides.clone(),
-			backend,
-			is_authority,
-		))
-	);
+
+	io.extend_with(EthApiServer::to_delegate(EthApi::new(
+		client.clone(),
+                pool.clone(),
+                frontier_template_runtime::TransactionConverter,
+                network.clone(),
+                pending_transactions.clone(),
+                signers,
+		overrides.clone(),
+		backend.clone(),
+		is_authority,
+		max_past_logs,
+	)));
 
 	if let Some(filter_pool) = filter_pool {
-		io.extend_with(
-			EthFilterApiServer::to_delegate(EthFilterApi::new(
-				client.clone(),
-				filter_pool.clone(),
-				500 as usize, // max stored filters
-				overrides.clone(),
-			))
-		);
-	}
+		io.extend_with(EthFilterApiServer::to_delegate(EthFilterApi::new(
+			client.clone(),
+			backend,
+			filter_pool.clone(),
+			500 as usize, // max stored filters
+			overrides.clone(),
+			max_past_logs,
+		)));
+        }
 
 	io.extend_with(
 		NetApiServer::to_delegate(NetApi::new(
 			client.clone(),
 			network.clone(),
+			// Whether to format the `peer_count` response as Hex (default) or not.
+			true,
 		))
 	);
 
@@ -181,7 +186,7 @@ pub fn create_full<C, P, BE>(
 		_ => {}
 	}
 
-	io
+	return io;
 }
 
 /// Instantiate all Light RPC extensions.
@@ -209,5 +214,5 @@ pub fn create_light<C, P, M, F>(
 		)
 	);
 
-	io
+	return io;
 }
