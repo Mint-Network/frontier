@@ -44,10 +44,9 @@ use fc_rpc_core::types::{
 use fp_rpc::{EthereumRuntimeRPCApi, ConvertTransaction, TransactionStatus};
 use crate::{frontier_backend_client, internal_err, error_on_execution_failure, EthSigner, public_key};
 
+pub use fc_rpc_core::{EthApiServer, NetApiServer, Web3ApiServer, EthFilterApiServer};
+use codec::{self, Encode};
 use crate::overrides::OverrideHandle;
-use codec::{self, Decode, Encode};
-pub use fc_rpc_core::{EthApiServer, EthFilterApiServer, NetApiServer, Web3ApiServer};
-use pallet_ethereum::EthereumStorageSchema;
 
 pub struct EthApi<B: BlockT, C, P, CT, BE, H: ExHashT> {
 	pool: Arc<P>,
@@ -216,7 +215,6 @@ fn transaction_build(
 
 fn filter_range_logs<B: BlockT, C, BE>(
 	client: &C,
-	backend: &fc_db::Backend<B>,
 	overrides: &OverrideHandle<B>,
 	ret: &mut Vec<Log>,
 	max_past_logs: u32,
@@ -245,63 +243,18 @@ fn filter_range_logs<B: BlockT, C, BE>(
 	} else {
 		None
 	};
-	let address_bloom_filter = FilteredParams::adresses_bloom_filter(&filter.address);
-	let topics_bloom_filter = FilteredParams::topics_bloom_filter(&topics_input);
-
-	// Get schema cache. A single AuxStore read before the block range iteration.
-	// This prevents having to do an extra DB read per block range iteration to getthe actual schema.
-	let mut local_cache: BTreeMap<NumberFor<B>, EthereumStorageSchema> = BTreeMap::new();
-	if let Ok(Some(schema_cache)) = frontier_backend_client::load_cached_schema::<B>(backend) {
-		for (schema, hash) in schema_cache {
-			if let Ok(Some(header)) = client.header(BlockId::Hash(hash)) {
-				let number = *header.number();
-				local_cache.insert(number, schema);
-			}
-		}
-	}
-	let cache_keys: Vec<NumberFor<B>> = local_cache.keys().cloned().collect();
-	let mut default_schema: Option<&EthereumStorageSchema> = None;
-	if cache_keys.len() == 1 {
-		// There is only one schema and that's the one we use.
-		default_schema = local_cache.get(&cache_keys[0]);
-	}
+	let bloom_filter = FilteredParams::bloom_filter(&filter.address, &topics_input);
 
 	while current_number >= from {
 		let id = BlockId::Number(current_number);
 
-		let schema = match default_schema {
-			// If there is a single schema, we just assign.
-			Some(default_schema) => *default_schema,
-			_ => {
-				// If there are multiple schemas, we iterate over the - hopefully short - list
-				// of keys and assign the one belonging to the current_number.
-				// Because there are more than 1 schema, and current_number cannot be < 0,
-				// (i - 1) will always be >= 0.
-				let mut default_schema: Option<&EthereumStorageSchema> = None;
-				for (i, k) in cache_keys.iter().enumerate() {
-					if &current_number < k {
-						default_schema = local_cache.get(&cache_keys[i - 1]);
-					}
-				}
-				match default_schema {
-					Some(schema) => *schema,
-					// Fallback to DB read. This will happen i.e. when there is no cache
-					// task configured at service level.
-					_ => frontier_backend_client::onchain_storage_schema::<B, C, BE>(client, id),
-				}
-			}
-		};
-		let handler = overrides
-			.schemas
-			.get(&schema)
-			.unwrap_or(&overrides.fallback);
+		let schema = frontier_backend_client::onchain_storage_schema::<B, C, BE>(client, id);
+		let handler = overrides.schemas.get(&schema).unwrap_or(&overrides.fallback);
 
 		let block = handler.current_block(&id);
 
 		if let Some(block) = block {
-			if FilteredParams::address_in_bloom(block.header.logs_bloom, &address_bloom_filter)
-				&& FilteredParams::topics_in_bloom(block.header.logs_bloom, &topics_bloom_filter)
-			{
+			if FilteredParams::in_bloom(block.header.logs_bloom, &bloom_filter) {
 				let statuses = handler.current_transaction_statuses(&id);
 				if let Some(statuses) = statuses {
 					filter_block_logs(ret, filter, block, statuses);
@@ -856,35 +809,12 @@ impl<B, C, P, CT, BE, H: ExHashT> EthApiT for EthApi<B, C, P, CT, BE, H> where
 				error_on_execution_failure(&info.exit_reason, &[])?;
 
 				Ok(Bytes(info.value[..].to_vec()))
-			}
+			},
 		}
 	}
 
-	fn estimate_gas(
-		&self,
-		request: CallRequest,
-		_: Option<BlockNumber>,
-	) -> Result<U256> {
-		let gas_limit = {
-			// query current block's gas limit
-			let id = BlockId::Hash(self.client.info().best_hash);
-			let schema =
-				frontier_backend_client::onchain_storage_schema::<B, C, BE>(&self.client, id);
-			let handler = self
-				.overrides
-				.schemas
-				.get(&schema)
-				.unwrap_or(&self.overrides.fallback);
-
-			let block = handler.current_block(&id);
-			if let Some(block) = block {
-				block.header.gas_limit
-			} else {
-				return Err(internal_err("block unavailable, cannot query gas limit"));
-			}
-		};
-
-		let calculate_gas_used = |request, gas_limit| -> Result<U256> {
+	fn estimate_gas(&self, request: CallRequest, _: Option<BlockNumber>) -> Result<U256> {
+		let calculate_gas_used = |request| -> Result<U256> {
 			let hash = self.client.info().best_hash;
 
 			let CallRequest {
@@ -897,8 +827,19 @@ impl<B, C, P, CT, BE, H: ExHashT> EthApiT for EthApi<B, C, P, CT, BE, H> where
 				nonce
 			} = request;
 
-			// Use request gas limit only if it less than gas_limit parameter
-			let gas_limit = core::cmp::min(gas.unwrap_or(gas_limit), gas_limit);
+			// use given gas limit or query current block's limit
+			let gas_limit = match gas {
+				Some(amount) => amount,
+				None => {
+					let block = self.client.runtime_api().current_block(&BlockId::Hash(hash))
+						.map_err(|err| internal_err(format!("runtime error: {:?}", err)))?;
+					if let Some(block) = block {
+						block.header.gas_limit
+					} else {
+						return Err(internal_err(format!("block unavailable, cannot query gas limit")));
+					}
+				},
+			};
 
 			let data = data.map(|d| d.0).unwrap_or_default();
 
@@ -947,15 +888,12 @@ impl<B, C, P, CT, BE, H: ExHashT> EthApiT for EthApi<B, C, P, CT, BE, H> where
 			Ok(used_gas)
 		};
 		if cfg!(feature = "rpc_binary_search_estimate") {
-			const MAX_OOG_PER_ESTIMATE_QUERY: u32 = 2;
-
 			let mut lower = U256::from(21_000);
 			// TODO: get a good upper limit, but below U64::max to operation overflow
-			let mut upper = U256::from(gas_limit);
+			let mut upper = U256::from(1_000_000_000);
 			let mut mid = upper;
 			let mut best = mid;
 			let mut old_best: U256;
-			let mut num_oog = 0;
 
 			// if the gas estimation depends on the gas limit, then we want to binary
 			// search until the change is under some threshold. but if not dependent,
@@ -967,7 +905,7 @@ impl<B, C, P, CT, BE, H: ExHashT> EthApiT for EthApi<B, C, P, CT, BE, H> where
 			while change_pct > threshold_pct {
 				let mut test_request = request.clone();
 				test_request.gas = Some(mid);
-				match calculate_gas_used(test_request, gas_limit) {
+				match calculate_gas_used(test_request) {
 					// if Ok -- try to reduce the gas used
 					Ok(used_gas) => {
 						old_best = best;
@@ -980,12 +918,6 @@ impl<B, C, P, CT, BE, H: ExHashT> EthApiT for EthApi<B, C, P, CT, BE, H> where
 					Err(err) => {
 						// if Err == OutofGas, we need more gas
 						if err.code == ErrorCode::ServerError(0) {
-							num_oog += 1;
-							// don't try more than twice if we oog
-							if num_oog >= MAX_OOG_PER_ESTIMATE_QUERY {
-								return Err(err);
-							}
-
 							lower = mid;
 							mid = (lower + upper + 1) / 2;
 							if mid == lower {
@@ -1000,19 +932,14 @@ impl<B, C, P, CT, BE, H: ExHashT> EthApiT for EthApi<B, C, P, CT, BE, H> where
 			}
 			Ok(best)
 		} else {
-			calculate_gas_used(request, gas_limit)
+			calculate_gas_used(request)
 		}
 	}
 
 	fn transaction_by_hash(&self, hash: H256) -> Result<Option<Transaction>> {
-		let (hash, index) = match frontier_backend_client::load_transactions::<B, C>(
-			self.client.as_ref(),
-			self.backend.as_ref(),
-			hash,
-			true,
-		)
-		.map_err(|err| internal_err(format!("{:?}", err)))?
-		{
+
+		let (hash, index) = match frontier_backend_client::load_transactions::<B, C>(self.client.as_ref(), self.backend.as_ref(), hash)
+			.map_err(|err| internal_err(format!("{:?}", err)))? {
 			Some((hash, index)) => (hash, index as usize),
 			None => {
 				if let Some(pending) = &self.pending_transactions {
@@ -1110,14 +1037,8 @@ impl<B, C, P, CT, BE, H: ExHashT> EthApiT for EthApi<B, C, P, CT, BE, H> where
 	}
 
 	fn transaction_receipt(&self, hash: H256) -> Result<Option<Receipt>> {
-		let (hash, index) = match frontier_backend_client::load_transactions::<B, C>(
-			self.client.as_ref(),
-			self.backend.as_ref(),
-			hash,
-			true,
-		)
-		.map_err(|err| internal_err(format!("{:?}", err)))?
-		{
+		let (hash, index) = match frontier_backend_client::load_transactions::<B, C>(self.client.as_ref(), self.backend.as_ref(), hash)
+			.map_err(|err| internal_err(format!("{:?}", err)))? {
 			Some((hash, index)) => (hash, index as usize),
 			None => return Ok(None),
 		};
@@ -1245,7 +1166,6 @@ impl<B, C, P, CT, BE, H: ExHashT> EthApiT for EthApi<B, C, P, CT, BE, H> where
 
 			let _ = filter_range_logs(
 				self.client.as_ref(),
-				self.backend.as_ref(),
 				&self.overrides,
 				&mut ret,
 				self.max_past_logs,
@@ -1373,7 +1293,6 @@ impl<B, C> Web3ApiT for Web3Api<B, C> where
 
 pub struct EthFilterApi<B: BlockT, C, BE> {
 	client: Arc<C>,
-	backend: Arc<fc_db::Backend<B>>,
 	filter_pool: FilterPool,
 	max_stored_filters: usize,
 	overrides: Arc<OverrideHandle<B>>,
@@ -1391,7 +1310,6 @@ impl<B: BlockT, C, BE> EthFilterApi<B, C, BE>  where
 {
 	pub fn new(
 		client: Arc<C>,
-		backend: Arc<fc_db::Backend<B>>,
 		filter_pool: FilterPool,
 		max_stored_filters: usize,
 		overrides: Arc<OverrideHandle<B>>,
@@ -1399,7 +1317,6 @@ impl<B: BlockT, C, BE> EthFilterApi<B, C, BE>  where
 	) -> Self {
 		Self {
 			client: client.clone(),
-			backend: backend.clone(),
 			filter_pool,
 			max_stored_filters,
 			overrides,
@@ -1543,7 +1460,6 @@ impl<B, C, BE> EthFilterApiT for EthFilterApi<B, C, BE> where
 						let mut ret: Vec<Log> = Vec::new();
 						let _ = filter_range_logs(
 							self.client.as_ref(),
-							self.backend.as_ref(),
 							&self.overrides,
 							&mut ret,
 							self.max_past_logs,
@@ -1612,7 +1528,6 @@ impl<B, C, BE> EthFilterApiT for EthFilterApi<B, C, BE> where
 						let mut ret: Vec<Log> = Vec::new();
 						let _ = filter_range_logs(
 							self.client.as_ref(),
-							self.backend.as_ref(),
 							&self.overrides,
 							&mut ret,
 							self.max_past_logs,
@@ -1658,88 +1573,9 @@ pub struct EthTask<B, C>(PhantomData<(B, C)>);
 
 impl<B, C> EthTask<B, C>
 where
-	C: ProvideRuntimeApi<B> + BlockchainEvents<B> + HeaderBackend<B>,
-	B: BlockT<Hash = H256>,
+	C: ProvideRuntimeApi<B> + BlockchainEvents<B>,
+	B: BlockT,
 {
-	/// Task that caches at which best hash a new EthereumStorageSchema was inserted in the Runtime Storage.
-	pub async fn ethereum_schema_cache_task(client: Arc<C>, backend: Arc<fc_db::Backend<B>>) {
-		use fp_storage::PALLET_ETHEREUM_SCHEMA;
-		use log::warn;
-		use sp_storage::{StorageData, StorageKey};
-
-		if let Ok(None) = frontier_backend_client::load_cached_schema::<B>(backend.as_ref()) {
-			let mut cache: Vec<(EthereumStorageSchema, H256)> = Vec::new();
-			if let Ok(Some(header)) = client.header(BlockId::Number(Zero::zero())) {
-				cache.push((EthereumStorageSchema::V1, header.hash()));
-				let _ = frontier_backend_client::write_cached_schema::<B>(backend.as_ref(), cache)
-					.map_err(|err| {
-						warn!("Error schema cache insert for genesis: {:?}", err);
-					});
-			} else {
-				warn!("Error genesis header unreachable");
-			}
-		}
-
-		// Subscribe to changes for the pallet-ethereum Schema.
-		if let Ok(mut stream) = client.storage_changes_notification_stream(
-			Some(&[StorageKey(PALLET_ETHEREUM_SCHEMA.to_vec())]),
-			None,
-		) {
-			while let Some((hash, changes)) = stream.next().await {
-				// Make sure only block hashes marked as best are referencing cache checkpoints.
-				if hash == client.info().best_hash {
-					// Just map the change set to the actual data.
-					let storage: Vec<Option<StorageData>> = changes
-						.iter()
-						.filter_map(|(o_sk, _k, v)| {
-							if o_sk.is_none() {
-								Some(v.cloned())
-							} else {
-								None
-							}
-						})
-						.collect();
-					for change in storage {
-						if let Some(data) = change {
-							// Decode the wrapped blob which's type is known.
-							let new_schema: EthereumStorageSchema =
-								Decode::decode(&mut &data.0[..]).unwrap();
-							// Cache new entry and overwrite the AuxStore value.
-							if let Ok(Some(old_cache)) =
-								frontier_backend_client::load_cached_schema::<B>(backend.as_ref())
-							{
-								let mut new_cache: Vec<(EthereumStorageSchema, H256)> = old_cache;
-								match &new_cache[..] {
-									[.., (schema, _)] if *schema == new_schema => {
-										warn!(
-											"Schema version already in AuxStore, ignoring: {:?}",
-											new_schema
-										);
-									}
-									_ => {
-										new_cache.push((new_schema, hash));
-										let _ = frontier_backend_client::write_cached_schema::<B>(
-											backend.as_ref(),
-											new_cache,
-										)
-										.map_err(|err| {
-											warn!(
-												"Error schema cache insert for genesis: {:?}",
-												err
-											);
-										});
-									}
-								}
-							} else {
-								warn!("Error schema cache is corrupted");
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
 	pub async fn pending_transaction_task(
 		client: Arc<C>,
 		pending_transactions: Arc<Mutex<HashMap<H256, PendingTransaction>>>,
