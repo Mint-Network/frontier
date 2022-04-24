@@ -63,7 +63,7 @@ pub enum ReturnValue {
 }
 
 /// The schema version for Pallet Ethereum's storage
-#[derive(Clone, Copy, Debug, Encode, Decode, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Encode, Decode, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EthereumStorageSchema {
 	Undefined,
 	V1,
@@ -195,27 +195,6 @@ impl<T: Config> frame_support::unsigned::ValidateUnsigned for Module<T> {
 
 	fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
 		if let Call::transact(transaction) = call {
-			// We must ensure a transaction can pay the cost of its data bytes.
-			// If it can't it should not be included in a block.
-			let mut gasometer = evm::gasometer::Gasometer::new(
-				transaction.gas_limit.low_u64(),
-				<T as pallet_evm::Config>::config(),
-			);
-			let transaction_cost = match transaction.action {
-				TransactionAction::Call(_) => {
-					evm::gasometer::call_transaction_cost(&transaction.input)
-				}
-				TransactionAction::Create => {
-					evm::gasometer::create_transaction_cost(&transaction.input)
-				}
-			};
-			if gasometer.record_transaction(transaction_cost).is_err() {
-				return InvalidTransaction::Custom(
-					TransactionValidationError::InvalidGasLimit as u8,
-				)
-				.into();
-			}
-
 			if let Some(chain_id) = transaction.signature.chain_id() {
 				if chain_id != T::ChainId::get() {
 					return InvalidTransaction::Custom(TransactionValidationError::InvalidChainId as u8).into();
@@ -298,14 +277,14 @@ impl<T: Config> Module<T> {
 		}
 
 		let ommers = Vec::<ethereum::Header>::new();
-		let receipts_root = ethereum::util::ordered_trie_root(
-			receipts.iter().map(|r| rlp::encode(r))
-		);
 		let partial_header = ethereum::PartialHeader {
 			parent_hash: Self::current_block_hash().unwrap_or_default(),
 			beneficiary: <Module<T>>::find_author(),
-			state_root: T::StateRoot::get(),
-			receipts_root,
+			// TODO: figure out if there's better way to get a sort-of-valid state root.
+			state_root: H256::default(),
+			receipts_root: H256::from_slice(
+				Keccak256::digest(&rlp::encode_list(&receipts)[..]).as_slice(),
+			), // TODO: check receipts hash.
 			logs_bloom,
 			difficulty: U256::zero(),
 			number: block_number,
@@ -318,7 +297,8 @@ impl<T: Config> Module<T> {
 			mix_hash: H256::default(),
 			nonce: H64::default(),
 		};
-		let block = ethereum::Block::new(partial_header, transactions.clone(), ommers);
+		let mut block = ethereum::Block::new(partial_header, transactions.clone(), ommers);
+		block.header.state_root = T::StateRoot::get();
 
 		CurrentBlock::put(block.clone());
 		CurrentReceipts::put(receipts.clone());

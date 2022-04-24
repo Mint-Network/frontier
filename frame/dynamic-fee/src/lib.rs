@@ -85,7 +85,7 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_finalize(_n: T::BlockNumber) {
-			if let Some(target) = TargetMinGasPrice::<T>::take() {
+			if let Some(target) = TargetMinGasPrice::<T>::get() {
 				let bound = MinGasPrice::<T>::get() / T::MinGasPriceBoundDivisor::get() + U256::one();
 
 				let upper_limit = MinGasPrice::<T>::get().saturating_add(bound);
@@ -106,7 +106,6 @@ pub mod pallet {
 			target: U256,
 		) -> DispatchResultWithPostInfo {
 			ensure_none(origin)?;
-			assert!(TargetMinGasPrice::<T>::get().is_none(), "TargetMinGasPrice must be updated only once in the block");
 
 			TargetMinGasPrice::<T>::set(Some(target));
 			Self::deposit_event(Event::TargetMinGasPriceSet(target));
