@@ -21,14 +21,14 @@ describeWithFrontier("Frontier RPC (Constructor Revert)", (context) => {
 
 	it("should provide a tx receipt after successful deployment", async function () {
 		this.timeout(15000);
-		const GOOD_TX_HASH = '0xae813c533aac0719fbca4db6e3bb05cfb5859bdeaaa7dc5c9dbd24083301be8d';
+		const GOOD_TX_HASH = '0xe73cae1b1105e805ec524b7ffdc4144041e72ff5fb539757ab2d4eef255bfe2d';
 
 		const tx = await context.web3.eth.accounts.signTransaction(
 			{
 				from: GENESIS_ACCOUNT,
 				data: GOOD_BYTECODE,
 				value: "0x00",
-				gasPrice: "0x01",
+				gasPrice: "0x3B9ACA00",
 				gas: "0x100000",
 			},
 			GENESIS_ACCOUNT_PRIVATE_KEY
@@ -46,13 +46,12 @@ describeWithFrontier("Frontier RPC (Constructor Revert)", (context) => {
 		await createAndFinalizeBlock(context.web3);
 		const receipt = await context.web3.eth.getTransactionReceipt(GOOD_TX_HASH);
 		expect(receipt).to.include({
-			blockNumber: 1,
 			contractAddress: '0xC2Bf5F29a4384b1aB0C063e1c666f02121B6084a',
 			cumulativeGasUsed: 67231,
 			from: '0x6be02d1d3665660d22ff9624b7be0551ee1ac91b',
 			gasUsed: 67231,
 			to: null,
-			transactionHash: '0xae813c533aac0719fbca4db6e3bb05cfb5859bdeaaa7dc5c9dbd24083301be8d',
+			transactionHash: GOOD_TX_HASH,
 			transactionIndex: 0,
 			status: true
 		});
@@ -62,14 +61,14 @@ describeWithFrontier("Frontier RPC (Constructor Revert)", (context) => {
 		this.timeout(15000);
 		// Transaction hash depends on which nonce we're using
 		//const FAIL_TX_HASH = '0x89a956c4631822f407b3af11f9251796c276655860c892919f848699ed570a8d'; //nonce 1
-		const FAIL_TX_HASH = '0x640df9deb183d565addc45bdc8f95b30c7c03ce7e69df49456be9929352e4347'; //nonce 2
+		const FAIL_TX_HASH = '0x0aad023a79ccfe0290b8cb47a807720bf4ffcf60225f3fa786eefd95b538d87d'; //nonce 2
 
 		const tx = await context.web3.eth.accounts.signTransaction(
 			{
 				from: GENESIS_ACCOUNT,
 				data: FAIL_BYTECODE,
 				value: "0x00",
-				gasPrice: "0x01",
+				gasPrice: "0x3B9ACA00",
 				gas: "0x100000",
 			},
 			GENESIS_ACCOUNT_PRIVATE_KEY
@@ -86,13 +85,12 @@ describeWithFrontier("Frontier RPC (Constructor Revert)", (context) => {
 		await createAndFinalizeBlock(context.web3);
 		const receipt = await context.web3.eth.getTransactionReceipt(FAIL_TX_HASH);
 		expect(receipt).to.include({
-			blockNumber: 2,
 			contractAddress: '0x5c4242beB94dE30b922f57241f1D02f36e906915',
 			cumulativeGasUsed: 54600,
 			from: '0x6be02d1d3665660d22ff9624b7be0551ee1ac91b',
 			gasUsed: 54600,
 			to: null,
-			transactionHash: '0x640df9deb183d565addc45bdc8f95b30c7c03ce7e69df49456be9929352e4347',
+			transactionHash: FAIL_TX_HASH,
 			transactionIndex: 0,
 			status: false
 		});

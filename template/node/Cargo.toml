@@ -1,55 +1,60 @@
 [package]
 name = "frontier-template-node"
 version = "0.0.0"
-authors = ["Parity Technologies <admin@parity.io>"]
-description = "Frontier Node template"
+authors = ["Substrate DevHub <https://github.com/substrate-developer-hub>"]
+description = "A fresh FRAME-based Substrate node, ready for hacking."
 edition = "2018"
 license = "Unlicense"
 build = "build.rs"
-homepage = "https://substrate.dev"
-repository = "https://github.com/paritytech/frontier/"
+homepage = "https://substrate.io"
+repository = "https://github.com/substrate-developer-hub/frontier-node-template/"
 publish = false
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-futures = "0.3.4"
-log = "0.4.8"
 structopt = "0.3.8"
-jsonrpc-core = "15.0.0"
-jsonrpc-pubsub = "15.0.0"
+async-trait = "0.1"
+jsonrpc-pubsub = "18.0.0"
+futures = "0.3"
+log = "0.4.8"
 
-sp-api = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-blockchain = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-rpc-api = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-rpc = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-substrate-frame-rpc-system = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-pallet-transaction-payment-rpc = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-cli = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-core = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-executor = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-service = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-inherents = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-transaction-pool = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-transaction-pool = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-network = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-consensus-aura = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-consensus-aura = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-consensus-manual-seal = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-consensus = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-consensus = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-timestamp = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-pallet-evm = { path = "../../frame/evm" }
-pallet-ethereum = { path = "../../frame/ethereum" }
-pallet-dynamic-fee = { path = "../../frame/dynamic-fee" }
-sc-finality-grandpa = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-finality-grandpa = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-client-api = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-runtime = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-basic-authorship = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sp-block-builder = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
-sc-telemetry = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
+sc-cli = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2", features = ["wasmtime"] }
+sp-core = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-executor = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2", features = ["wasmtime"] }
+sc-service = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2", features = ["wasmtime"] }
+sc-telemetry = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-keystore = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-transaction-pool = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-transaction-pool-api = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-consensus-aura = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sp-consensus-aura = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sp-consensus = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-consensus = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-consensus-manual-seal = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-network = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-finality-grandpa = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sp-finality-grandpa = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-client-api = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sp-runtime = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sp-timestamp = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sp-inherents = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+
+# These dependencies are used for the node template's RPCs
+jsonrpc-core = "18.0.0"
+sc-rpc = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sp-api = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-rpc-api = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sp-blockchain = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sp-block-builder = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+sc-basic-authorship = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+substrate-frame-rpc-system = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+pallet-transaction-payment-rpc = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+
+# These dependencies are used for runtime benchmarking
+frame-benchmarking = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
+frame-benchmarking-cli = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
 
 fc-consensus = { path = "../../client/consensus" }
 fp-consensus = { path = "../../primitives/consensus" }
@@ -60,10 +65,18 @@ fc-rpc-core = { path = "../../client/rpc-core" }
 fc-db = { path = "../../client/db" }
 fc-mapping-sync = { path = "../../client/mapping-sync" }
 
+pallet-evm = { path = "../../frame/evm" }
+pallet-ethereum = { path = "../../frame/ethereum" }
+pallet-dynamic-fee = { path = "../../frame/dynamic-fee" }
+pallet-base-fee = { path = "../../frame/base-fee" }
+
 [build-dependencies]
-substrate-build-script-utils = { git = "https://github.com/Mint-Network/substrate.git", branch = "cdx-1" }
+substrate-build-script-utils = { git = "https://github.com/Mint-Network/substrate", branch = "cdx-2" }
 
 [features]
 default = ["aura"]
 aura = ["frontier-template-runtime/aura"]
 manual-seal = ["frontier-template-runtime/manual-seal"]
+runtime-benchmarks = [
+	"frontier-template-runtime/runtime-benchmarks",
+]

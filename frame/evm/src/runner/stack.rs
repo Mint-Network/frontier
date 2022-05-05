@@ -17,22 +17,24 @@
 
 //! EVM stack-based runner.
 
-use sp_std::{marker::PhantomData, vec::Vec, boxed::Box, mem, collections::btree_set::BTreeSet};
-use sp_core::{U256, H256, H160};
-use sp_runtime::traits::UniqueSaturatedInto;
-use frame_support::{
-	ensure, traits::{Get, Currency, ExistenceRequirement},
-};
-use sha3::{Keccak256, Digest};
-use fp_evm::{ExecutionInfo, CallInfo, CreateInfo, Log, Vicinity};
-use evm::{ExitReason, ExitError, Transfer};
-use evm::backend::Backend as BackendT;
-use evm::executor::{StackExecutor, StackSubstateMetadata, StackState as StackStateT};
 use crate::{
-	Config, AccountStorages, FeeCalculator, AccountCodes, Pallet, Event,
-	Error, AddressMapping, PrecompileSet, OnChargeEVMTransaction
+	runner::Runner as RunnerT, AccountCodes, AccountStorages, AddressMapping, BlockHashMapping,
+	Config, Error, Event, FeeCalculator, OnChargeEVMTransaction, Pallet,
 };
-use crate::runner::Runner as RunnerT;
+use evm::{
+	backend::Backend as BackendT,
+	executor::stack::{Accessed, StackExecutor, StackState as StackStateT, StackSubstateMetadata},
+	ExitError, ExitReason, Transfer,
+};
+use fp_evm::{CallInfo, CreateInfo, ExecutionInfo, Log, Vicinity};
+use frame_support::{
+	ensure,
+	traits::{Currency, ExistenceRequirement, Get},
+};
+use sha3::{Digest, Keccak256};
+use sp_core::{H160, H256, U256};
+use sp_runtime::traits::UniqueSaturatedInto;
+use sp_std::{boxed::Box, collections::btree_set::BTreeSet, marker::PhantomData, mem, vec::Vec};
 
 #[derive(Default)]
 pub struct Runner<T: Config> {
@@ -41,49 +43,74 @@ pub struct Runner<T: Config> {
 
 impl<T: Config> Runner<T> {
 	/// Execute an EVM operation.
-	pub fn execute<'config, F, R>(
+	pub fn execute<'config, 'precompiles, F, R>(
 		source: H160,
 		value: U256,
 		gas_limit: u64,
-		gas_price: Option<U256>,
+		max_fee_per_gas: Option<U256>,
+		max_priority_fee_per_gas: Option<U256>,
 		nonce: Option<U256>,
 		config: &'config evm::Config,
+		precompiles: &'precompiles T::PrecompilesType,
 		f: F,
-	) -> Result<ExecutionInfo<R>, Error<T>> where
-		F: FnOnce(&mut StackExecutor<'config, SubstrateStackState<'_, 'config, T>>) -> (ExitReason, R),
+	) -> Result<ExecutionInfo<R>, Error<T>>
+	where
+		F: FnOnce(
+			&mut StackExecutor<
+				'config,
+				'precompiles,
+				SubstrateStackState<'_, 'config, T>,
+				T::PrecompilesType,
+			>,
+		) -> (ExitReason, R),
 	{
+		let base_fee = T::FeeCalculator::min_gas_price();
 		// Gas price check is skipped when performing a gas estimation.
-		let gas_price = match gas_price {
-			Some(gas_price) => {
-				ensure!(gas_price >= T::FeeCalculator::min_gas_price(), Error::<T>::GasPriceTooLow);
-				gas_price
-			},
+		let max_fee_per_gas = match max_fee_per_gas {
+			Some(max_fee_per_gas) => {
+				ensure!(max_fee_per_gas >= base_fee, Error::<T>::GasPriceTooLow);
+				max_fee_per_gas
+			}
 			None => Default::default(),
 		};
 
 		let vicinity = Vicinity {
-			gas_price,
+			gas_price: max_fee_per_gas,
 			origin: source,
 		};
 
 		let metadata = StackSubstateMetadata::new(gas_limit, &config);
 		let state = SubstrateStackState::new(&vicinity, metadata);
-		let mut executor = StackExecutor::new_with_precompile(
-			state,
-			config,
-			T::Precompiles::execute,
-		);
+		let mut executor = StackExecutor::new_with_precompiles(state, config, precompiles);
 
-		let total_fee = gas_price.checked_mul(U256::from(gas_limit))
+		// After eip-1559 we make sure the account can pay both the evm execution and priority fees.
+		let max_base_fee = max_fee_per_gas
+			.checked_mul(U256::from(gas_limit))
 			.ok_or(Error::<T>::FeeOverflow)?;
-		let total_payment = value.checked_add(total_fee).ok_or(Error::<T>::PaymentOverflow)?;
+		let max_priority_fee = if let Some(max_priority_fee) = max_priority_fee_per_gas {
+			max_priority_fee
+				.checked_mul(U256::from(gas_limit))
+				.ok_or(Error::<T>::FeeOverflow)?
+		} else {
+			U256::zero()
+		};
+
+		let total_fee = max_base_fee
+			.checked_add(max_priority_fee)
+			.ok_or(Error::<T>::FeeOverflow)?;
+
+		let total_payment = value
+			.checked_add(total_fee)
+			.ok_or(Error::<T>::PaymentOverflow)?;
 		let source_account = Pallet::<T>::account_basic(&source);
-		ensure!(source_account.balance >= total_payment, Error::<T>::BalanceLow);
+		ensure!(
+			source_account.balance >= total_payment,
+			Error::<T>::BalanceLow
+		);
 
 		if let Some(nonce) = nonce {
 			ensure!(source_account.nonce == nonce, Error::<T>::InvalidNonce);
 		}
-
 		// Deduct fee from the `source` account.
 		let fee = T::OnChargeTransaction::withdraw_fee(&source, total_fee)?;
 
@@ -91,7 +118,19 @@ impl<T: Config> Runner<T> {
 		let (reason, retv) = f(&mut executor);
 
 		let used_gas = U256::from(executor.used_gas());
-		let actual_fee = executor.fee(gas_price);
+		let (actual_fee, actual_priority_fee) =
+			if let Some(max_priority_fee) = max_priority_fee_per_gas {
+				let actual_priority_fee = max_priority_fee
+					.checked_mul(U256::from(used_gas))
+					.ok_or(Error::<T>::FeeOverflow)?;
+				let actual_fee = executor
+					.fee(base_fee)
+					.checked_add(actual_priority_fee)
+					.unwrap_or(U256::max_value());
+				(actual_fee, Some(actual_priority_fee))
+			} else {
+				(executor.fee(base_fee), None)
+			};
 		log::debug!(
 			target: "evm",
 			"Execution {:?} [source: {:?}, value: {}, gas_limit: {}, actual_fee: {}]",
@@ -101,9 +140,31 @@ impl<T: Config> Runner<T> {
 			gas_limit,
 			actual_fee
 		);
-
-		// Refund fees to the `source` account if deducted more before,
-		T::OnChargeTransaction::correct_and_deposit_fee(&source, actual_fee, fee)?;
+		// The difference between initially withdrawn and the actual cost is refunded.
+		//
+		// Considered the following request:
+		// +-----------+---------+--------------+
+		// | Gas_limit | Max_Fee | Max_Priority |
+		// +-----------+---------+--------------+
+		// |        20 |      10 |            6 |
+		// +-----------+---------+--------------+
+		//
+		// And execution:
+		// +----------+----------+
+		// | Gas_used | Base_Fee |
+		// +----------+----------+
+		// |        5 |        2 |
+		// +----------+----------+
+		//
+		// Initially withdrawn (10 + 6) * 20 = 320.
+		// Actual cost (2 + 6) * 5 = 40.
+		// Refunded 320 - 40 = 280.
+		// Tip 5 * 6 = 30.
+		// Burned 320 - (280 + 30) = 10. Which is equivalent to gas_used * base_fee.
+		T::OnChargeTransaction::correct_and_deposit_fee(&source, actual_fee, fee);
+		if let Some(actual_priority_fee) = actual_priority_fee {
+			T::OnChargeTransaction::pay_priority_fee(actual_priority_fee);
+		}
 
 		let state = executor.into_state();
 
@@ -151,24 +212,23 @@ impl<T: Config> RunnerT<T> for Runner<T> {
 		input: Vec<u8>,
 		value: U256,
 		gas_limit: u64,
-		gas_price: Option<U256>,
+		max_fee_per_gas: Option<U256>,
+		max_priority_fee_per_gas: Option<U256>,
 		nonce: Option<U256>,
+		access_list: Vec<(H160, Vec<H256>)>,
 		config: &evm::Config,
 	) -> Result<CallInfo, Self::Error> {
+		let precompiles = T::PrecompilesValue::get();
 		Self::execute(
 			source,
 			value,
 			gas_limit,
-			gas_price,
+			max_fee_per_gas,
+			max_priority_fee_per_gas,
 			nonce,
 			config,
-			|executor| executor.transact_call(
-				source,
-				target,
-				value,
-				input,
-				gas_limit,
-			),
+			&precompiles,
+			|executor| executor.transact_call(source, target, value, input, gas_limit, access_list),
 		)
 	}
 
@@ -177,27 +237,28 @@ impl<T: Config> RunnerT<T> for Runner<T> {
 		init: Vec<u8>,
 		value: U256,
 		gas_limit: u64,
-		gas_price: Option<U256>,
+		max_fee_per_gas: Option<U256>,
+		max_priority_fee_per_gas: Option<U256>,
 		nonce: Option<U256>,
+		access_list: Vec<(H160, Vec<H256>)>,
 		config: &evm::Config,
 	) -> Result<CreateInfo, Self::Error> {
+		let precompiles = T::PrecompilesValue::get();
 		Self::execute(
 			source,
 			value,
 			gas_limit,
-			gas_price,
+			max_fee_per_gas,
+			max_priority_fee_per_gas,
 			nonce,
 			config,
+			&precompiles,
 			|executor| {
-				let address = executor.create_address(
-					evm::CreateScheme::Legacy { caller: source },
-				);
-				(executor.transact_create(
-					source,
-					value,
-					init,
-					gas_limit,
-				), address)
+				let address = executor.create_address(evm::CreateScheme::Legacy { caller: source });
+				(
+					executor.transact_create(source, value, init, gas_limit, access_list),
+					address,
+				)
 			},
 		)
 	}
@@ -208,29 +269,33 @@ impl<T: Config> RunnerT<T> for Runner<T> {
 		salt: H256,
 		value: U256,
 		gas_limit: u64,
-		gas_price: Option<U256>,
+		max_fee_per_gas: Option<U256>,
+		max_priority_fee_per_gas: Option<U256>,
 		nonce: Option<U256>,
+		access_list: Vec<(H160, Vec<H256>)>,
 		config: &evm::Config,
 	) -> Result<CreateInfo, Self::Error> {
+		let precompiles = T::PrecompilesValue::get();
 		let code_hash = H256::from_slice(Keccak256::digest(&init).as_slice());
 		Self::execute(
 			source,
 			value,
 			gas_limit,
-			gas_price,
+			max_fee_per_gas,
+			max_priority_fee_per_gas,
 			nonce,
 			config,
+			&precompiles,
 			|executor| {
-				let address = executor.create_address(
-					evm::CreateScheme::Create2 { caller: source, code_hash, salt },
-				);
-				(executor.transact_create2(
-					source,
-					value,
-					init,
+				let address = executor.create_address(evm::CreateScheme::Create2 {
+					caller: source,
+					code_hash,
 					salt,
-					gas_limit,
-				), address)
+				});
+				(
+					executor.transact_create2(source, value, init, salt, gas_limit, access_list),
+					address,
+				)
 			},
 		)
 	}
@@ -298,11 +363,11 @@ impl<'config> SubstrateStackSubstate<'config> {
 
 	pub fn deleted(&self, address: H160) -> bool {
 		if self.deletes.contains(&address) {
-			return true
+			return true;
 		}
 
 		if let Some(parent) = self.parent.as_ref() {
-			return parent.deleted(address)
+			return parent.deleted(address);
 		}
 
 		false
@@ -314,8 +379,22 @@ impl<'config> SubstrateStackSubstate<'config> {
 
 	pub fn log(&mut self, address: H160, topics: Vec<H256>, data: Vec<u8>) {
 		self.logs.push(Log {
-			address, topics, data,
+			address,
+			topics,
+			data,
 		});
+	}
+
+	fn recursive_is_cold<F: Fn(&Accessed) -> bool>(&self, f: &F) -> bool {
+		let local_is_accessed = self.metadata.accessed().as_ref().map(f).unwrap_or(false);
+		if local_is_accessed {
+			false
+		} else {
+			self.parent
+				.as_ref()
+				.map(|p| p.recursive_is_cold(f))
+				.unwrap_or(true)
+		}
 	}
 }
 
@@ -329,25 +408,32 @@ pub struct SubstrateStackState<'vicinity, 'config, T> {
 impl<'vicinity, 'config, T: Config> SubstrateStackState<'vicinity, 'config, T> {
 	/// Create a new backend with given vicinity.
 	pub fn new(vicinity: &'vicinity Vicinity, metadata: StackSubstateMetadata<'config>) -> Self {
-		Self { vicinity, substate: SubstrateStackSubstate {
-			metadata,
-			deletes: BTreeSet::new(),
-			logs: Vec::new(),
-			parent: None,
-		}, _marker: PhantomData }
+		Self {
+			vicinity,
+			substate: SubstrateStackSubstate {
+				metadata,
+				deletes: BTreeSet::new(),
+				logs: Vec::new(),
+				parent: None,
+			},
+			_marker: PhantomData,
+		}
 	}
 }
 
 impl<'vicinity, 'config, T: Config> BackendT for SubstrateStackState<'vicinity, 'config, T> {
-	fn gas_price(&self) -> U256 { self.vicinity.gas_price }
-	fn origin(&self) -> H160 { self.vicinity.origin }
+	fn gas_price(&self) -> U256 {
+		self.vicinity.gas_price
+	}
+	fn origin(&self) -> H160 {
+		self.vicinity.origin
+	}
 
 	fn block_hash(&self, number: U256) -> H256 {
 		if number > U256::from(u32::max_value()) {
 			H256::default()
 		} else {
-			let number = T::BlockNumber::from(number.as_u32());
-			H256::from_slice(frame_system::Pallet::<T>::block_hash(number).as_ref())
+			T::BlockHashMapping::block_hash(number.as_u32())
 		}
 	}
 
@@ -357,7 +443,7 @@ impl<'vicinity, 'config, T: Config> BackendT for SubstrateStackState<'vicinity, 
 	}
 
 	fn block_coinbase(&self) -> H160 {
-		H160::default()
+		Pallet::<T>::find_author()
 	}
 
 	fn block_timestamp(&self) -> U256 {
@@ -370,7 +456,7 @@ impl<'vicinity, 'config, T: Config> BackendT for SubstrateStackState<'vicinity, 
 	}
 
 	fn block_gas_limit(&self) -> U256 {
-		U256::zero()
+		T::BlockGasLimit::get()
 	}
 
 	fn chain_id(&self) -> U256 {
@@ -401,9 +487,15 @@ impl<'vicinity, 'config, T: Config> BackendT for SubstrateStackState<'vicinity, 
 	fn original_storage(&self, _address: H160, _index: H256) -> Option<H256> {
 		None
 	}
+
+	fn block_base_fee_per_gas(&self) -> sp_core::U256 {
+		T::FeeCalculator::min_gas_price()
+	}
 }
 
-impl<'vicinity, 'config, T: Config> StackStateT<'config> for SubstrateStackState<'vicinity, 'config, T> {
+impl<'vicinity, 'config, T: Config> StackStateT<'config>
+	for SubstrateStackState<'vicinity, 'config, T>
+{
 	fn metadata(&self) -> &StackSubstateMetadata<'config> {
 		self.substate.metadata()
 	}
@@ -463,7 +555,7 @@ impl<'vicinity, 'config, T: Config> StackStateT<'config> for SubstrateStackState
 	}
 
 	fn reset_storage(&mut self, address: H160) {
-		<AccountStorages<T>>::remove_prefix(address);
+		<AccountStorages<T>>::remove_prefix(address, None);
 	}
 
 	fn log(&mut self, address: H160, topics: Vec<H256>, data: Vec<u8>) {
@@ -493,7 +585,8 @@ impl<'vicinity, 'config, T: Config> StackStateT<'config> for SubstrateStackState
 			&target,
 			transfer.value.low_u128().unique_saturated_into(),
 			ExistenceRequirement::AllowDeath,
-		).map_err(|_| ExitError::OutOfFund)
+		)
+		.map_err(|_| ExitError::OutOfFund)
 	}
 
 	fn reset_balance(&mut self, _address: H160) {
@@ -510,5 +603,15 @@ impl<'vicinity, 'config, T: Config> StackStateT<'config> for SubstrateStackState
 		// EVM pallet considers all accounts to exist, and distinguish
 		// only empty and non-empty accounts. This avoids many of the
 		// subtle issues in EIP-161.
+	}
+
+	fn is_cold(&self, address: H160) -> bool {
+		self.substate
+			.recursive_is_cold(&|a| a.accessed_addresses.contains(&address))
+	}
+
+	fn is_storage_cold(&self, address: H160, key: H256) -> bool {
+		self.substate
+			.recursive_is_cold(&|a: &Accessed| a.accessed_storage.contains(&(address, key)))
 	}
 }

@@ -17,7 +17,7 @@ describeWithFrontier("Frontier RPC (Gas)", (context) => {
 				from: GENESIS_ACCOUNT,
 				data: Test.bytecode,
 			})
-		).to.equal(149143);
+		).to.equal(196657);
 	});
 
 	it.skip("block gas limit over 5M", async function () {
@@ -44,7 +44,7 @@ describeWithFrontier("Frontier RPC (Gas)", (context) => {
 	it("eth_estimateGas for contract call", async function () {
 		const contract = new context.web3.eth.Contract(TEST_CONTRACT_ABI, FIRST_CONTRACT_ADDRESS, {
 			from: GENESIS_ACCOUNT,
-			gasPrice: "0x01",
+			gasPrice: "0x3B9ACA00",
 		});
 
 		expect(await contract.methods.multiply(3).estimateGas()).to.equal(21204);

@@ -16,9 +16,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-use serde::Serialize;
-use ethereum_types::{H160, H256, U64, U256, Bloom as H2048};
 use crate::types::Log;
+use ethereum_types::{Bloom as H2048, H160, H256, U256, U64};
+use serde::Serialize;
 
 /// Receipt
 #[derive(Debug, Serialize)]
@@ -54,4 +54,6 @@ pub struct Receipt {
 	// NOTE(niklasad1): Unknown after EIP98 rules, if it's missing then skip serializing it
 	#[serde(skip_serializing_if = "Option::is_none", rename = "status")]
 	pub status_code: Option<U64>,
+	/// Effective gas price. Pre-eip1559 this is just the gasprice. Post-eip1559 this is base fee + priority fee.
+	pub effective_gas_price: U256,
 }
